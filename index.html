@@ -1,0 +1,1089 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Qix</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="Keywords" content="Qix">
+<meta name="Description" content="Qix game in browser">
+<meta name="author" content="webhauser@gmail.com">
+<style>
+* { margin:0; padding:0; } 		/* to remove the top and left whitespace */
+html, body { overflow: hidden;} /* remove scrollbars */
+#Canvas {
+    position:fixed;
+    left:0;
+    top:0;
+    width:100%;
+    height:100%;
+	border:1px solid #c3c3c3;
+}
+</style>
+<noscript>JavaScript is Disabled. Please enable javascript and refresh the page</noscript>
+<script>
+/*******************************************************/
+var haveEvents = 'GamepadEvent' in window;
+var haveWebkitEvents = 'WebKitGamepadEvent' in window;
+var controllers = {};
+var rAF = window.mozRequestAnimationFrame || window.webkitRequestAnimationFrame || window.requestAnimationFrame;
+
+const PlayerDirsBottom = [
+	[1, 0, -1,  0],  // Axis 0: p=1 dx dy p==-1 dx dy -- jobb/bal
+	[0, 1,  0, -1]   // Axis 1: le/fel
+];
+const PlayerDirsTop = [
+	[-1, 0, 1, 0],
+	[0, -1, 0, 1]
+];
+const PlayerDirsLeft = [
+	[0, 1, 0, -1],
+	[-1, 0, 1, 0]
+];
+const PlayerDirsRight = [
+	[0, -1, 0, 1],
+	[1, 0, -1, 0]
+];
+const dirNames = [ "Bottom", "Right", "Top", "Left" ];
+var playerDirs = [PlayerDirsBottom, PlayerDirsRight, PlayerDirsTop, PlayerDirsLeft];
+
+function joy_ButtonPressed(b) {
+  if (typeof b === "object")
+	return b.pressed;
+  return b === 1.0;
+}
+
+function joy_AxisMove(gp, i, j, dir) {
+	var dx,dy;
+	var val=gp.axes[j];
+	if (val>0.5) {
+		dx=dir[j][0];
+		dy=dir[j][1];
+	}
+	else if (val<-0.5) {
+		dx=dir[j][2];
+		dy=dir[j][3];
+	}
+	else return;
+	playerControlMove(i, dx,dy);	// event action
+}
+
+function joy_scangamepads() {
+  var gamepads = navigator.getGamepads ? navigator.getGamepads() : (navigator.webkitGetGamepads ? navigator.webkitGetGamepads() : []);
+  for (var i = 0; i < gamepads.length; i++) {
+	if (gamepads[i] && (gamepads[i].index in controllers)) {
+	  controllers[gamepads[i].index] = gamepads[i];
+	}
+  }
+}
+
+function joy_updateStatus() {
+	joy_scangamepads();
+	for (j in controllers) {
+		var controller = controllers[j];
+		if (joy_ButtonPressed(controller.buttons[0])) playerControlButton(j, 0);	// event action
+		if (joy_ButtonPressed(controller.buttons[1])) playerControlButton(j, 1);	// event action
+		joy_AxisMove(controller, j, 0, playerDirs[j]);	// event action
+		joy_AxisMove(controller, j, 1, playerDirs[j]);	// event action
+	}
+	//rAF(joy_updateStatus);
+}
+
+function resetInfo(i) {/***
+	var heading = document.getElementById('heading'+i);
+	var message = document.getElementById('message'+i);	
+	heading.innerText = 'No controller connected!';
+	message.innerText = 'Please connect a controller and press any key to start.';***/
+	console.log('No controller connected! %d',i);
+}
+
+function updateInfo(i, id) {/***
+	var heading = document.getElementById('heading'+i);
+	var message = document.getElementById('message'+i);		
+	heading.innerText = 'Controller connected: #'+i;
+	message.innerText = id + '\n\n' + 'Use the '+dirNames[i]+' stick to move the ball.';***/
+	console.log('Controller [%s] connected: #%d:%s', i,id,dirNames[i]);
+}
+
+function addgamepad(gamepad) {
+	controllers[gamepad.index] = gamepad;		
+	updateInfo(gamepad.index, gamepad.id);
+	//rAF(joy_updateStatus);
+}
+
+function removegamepad(gamepad) {
+	resetInfo(gamepad.index);
+	delete controllers[gamepad.index];
+}
+
+function connecthandler(e) {
+  addgamepad(e.gamepad);
+}
+
+function disconnecthandler(e) {
+  removegamepad(e.gamepad);
+}
+
+/*******************************************************/
+const PlayerSize = 16; // Must be 4, 8, 16 or 32
+const PsD = 4;	// 2^PsD = PlayerSize
+
+const WinPercentInit = 50;
+const WinPercentStep = 10;
+const WinPercentMax = 90;
+const m_interval = 30;		// feliratok 
+
+const GameFont = "40px Arial";
+const GameFontColor = "red";
+//const WHITE = 0xFFFFFF;
+//const GREEN = 0x00FF00;
+
+var canvas,ctx;
+var xSize, ySize;	// Main panel size
+
+var ticks;
+var score, hiscore;
+var level, winPercent, totalFilled, totalPlaces;
+var GAME_OVER, GAME_WIN;
+var helpFlag, stopFlag, testFlag;
+var vonalHuzas, flagVonalGomb, flagCtrlGomb;	
+var vonalHuzasMode;	// lassu vagy gyors
+
+// Game display text 	
+var msgx, msgxx,msgxy,msgxc;//  to fade;
+var vx0,vy0,vx1,vy1, dir;	// Start and end points -- vonal bezaras, kezdo irany 
+
+// Objects
+var board;
+var player;
+var enemies = [];
+
+const EDxM = 8;	// Enemy Dx mul
+const EDxP = 8;	// Enemy Dx add
+
+// Board map values
+const C_Player1 = 1;
+const C_Player2 = 2;
+const C_Player3 = 3;
+const C_Player4 = 4;
+const C_Vonal = 8;	// Marker szine amit huz a jatekos a bekeriteshez
+const C_Filled = 9; // Terulet amit a jatekos mar elfoglalt filled
+const C_Menet = 255; // Ahol a jatekos mehet, contour
+
+class Pixmap {
+	
+	static Color_red = 7;	
+
+	static Colormap(c) {
+		switch(c) {
+			case 0: return 'black'; 
+			case C_Player1: return 'blue'; 
+			case C_Vonal: return 'green';
+			case C_Filled: return 'orange';
+			case C_Menet: return 'white'; 
+			case Pixmap.Color_red: return 'red';			
+		}
+		return 'yellow';
+	}
+	
+	constructor(xs,ys) {
+		this.xSize = xs;
+		this.ySize = ys;
+		this.pixels = new Uint8Array(xs*ys);
+	}
+
+	inRect(x,y) {
+		return x>=0 && y>=0 && x<this.xSize && y<this.ySize;
+	}
+	
+	getPix(x,y) {
+		return this.pixels[y*this.xSize + x];
+	}
+
+	getPixel(x,y) {
+		if(this.inRect(x,y))
+			return this.getPix(x,y);
+		return 0;
+	}
+
+	isAlapvonal(x,y) {
+		return this.getPixel(x,y)==C_Menet;
+	}
+	
+	putPix(x,y,col) {
+		this.pixels[y*this.xSize + x] = col;
+	}
+
+	frame( col ) {
+		for(let y=0; y<this.ySize; y++) {	// left, right
+			this.putPix(0,y,col);
+			this.putPix(this.xSize-1,y,col);
+		}		
+		for(let x=0; x<this.xSize; x++) {	// top, bottom
+			this.putPix(x,0,col);
+			this.putPix(x,this.ySize-1,col);
+		}
+	}
+
+	clear() {
+		for (let i=0; i<this.pixels.length; i++)
+			this.pixels[i]=0;
+	}
+	
+	// returns with the number of colors replaced
+	overcol(c1,c2) {
+		let count=0, i=0;
+		for(let y=0; y<this.ySize; y++) {
+			for(let x=0; x<this.xSize; x++) {
+				if (this.pixels[i]==c1) {
+					this.pixels[i]=c2;
+					count++;
+				}
+				i++;
+			}
+		}
+		return count;
+	}
+	
+	/* private */
+	fill(x,y, col) {
+		let xx,yy, count=1, count2=0;
+		this.putPix(x,y,col);
+		while(count > count2) {
+			count2 = count;
+			for(let y=0; y<this.ySize; y++) {
+				for(let x=0; x<this.xSize; x++) {
+					if(this.getPixel(x,y)==col) {
+						// van-e black szomszedja
+						xx=x+1; yy=y;	// right
+						if (this.getPixel(xx,yy)==0) {++count; this.putPix(xx,yy,col);}
+						xx=x-1; yy=y;	// left
+						if (this.getPixel(xx,yy)==0) {++count; this.putPix(xx,yy,col);}
+						xx=x; yy=y-1;// up
+						if (this.getPixel(xx,yy)==0) {++count; this.putPix(xx,yy,col);}
+						xx=x; yy=y+1;// down
+						if (this.getPixel(xx,yy)==0) {++count; this.putPix(xx,yy,col);}
+					}
+				}
+			}
+		}
+		return count;
+	}
+
+	// return -- a bekeritett pixelek szama
+	filler(dir, x1,y1, x2,y2) {
+		let innerFill=C_Filled;
+		let cx1,cy1,count1=0;
+		let cx2,cy2,count2=0;
+		
+		cx1=cx2=x1;
+		cy1=cy2=y1;
+		
+		// kezdo irany
+		switch(dir) {
+		case Player.DIR_UP: // Key Up - from bottom
+		case Player.DIR_DOWN: // Key Down - from up
+			cx1+=1;
+			cx2-=1;
+			break;
+		case Player.DIR_RIGHT: // Key Right - started from left
+		case Player.DIR_LEFT: // Key Left
+			cy1+=1;
+			cy2-=1;
+			break;
+		}
+	
+		count1=this.fill(cx1,cy1, Pixmap.Color_red); this.overcol(Pixmap.Color_red,0); // delete red color
+		count2=this.fill(cx2,cy2, Pixmap.Color_red); this.overcol(Pixmap.Color_red,0); // delete red color
+		
+		// Display candidate points for the fill start
+		if(count1 < count2) {			
+			 count1 = this.fill(cx1,cy1, innerFill); 
+			 //if(help) this.putPix( cx1, cy1, Pixmap.Color_red );
+		} else {
+			count1 = this.fill(cx2,cy2, innerFill);
+			//if(help) this.putPix( cx2, cy2, Pixmap.Color_red );
+		}
+
+		return count1;
+	}
+	
+	render() {
+		let i=0;
+		for(let y=0; y<this.ySize; y++) {
+			for(let x=0; x<this.xSize; x++) {
+				dotFill(x,y, Pixmap.Colormap(this.pixels[i++]));
+			}
+		}
+	}
+};
+	
+class Player {	
+	static DIR_UP=0;
+	static DIR_RIGHT=1;
+	static DIR_DOWN=2;
+	static DIR_LEFT=3;
+	
+	constructor(id, col) {
+		this.id = id;
+		this.x = 0;
+		this.y = 0;
+		this.px = 0;
+		this.py = 0;
+		this.dx = 0;
+		this.dy = 0;
+		this.moved=false;;
+		this.color = col;
+		this.reset();
+	}
+	
+	reset() {
+		// Set initial position
+		this.x = xSize >> PsD >> 1;
+		this.y = (ySize >> PsD) - 1;
+		this.px = this.py = -1;
+		this.currDir = 0;
+		this.prevDir = -1
+		this.moved=false;
+	}
+	
+	stop() {
+		this.x=this.px;
+		this.y=this.py;
+		this.dxdy(0,0);
+		this.moved=false;
+	}
+		
+	/* private */
+	dxdy(i,j) {
+		this.dx=i;
+		this.dy=j;
+	}
+	
+	move(dir) {
+		this.moved=true;
+		this.prevDir=this.currDir;
+		this.currDir=dir;
+		switch(dir) {
+			case Player.DIR_UP: 	this.dxdy(0,-1); break;
+			case Player.DIR_RIGHT:	this.dxdy(+1,0); break;
+			case Player.DIR_DOWN: 	this.dxdy(0,+1); break;				
+			case Player.DIR_LEFT: 	this.dxdy(-1,0); break;
+		}
+	}
+	
+	// returns with the color at new position
+	update(arena) {
+		if (this.moved) {			
+			this.moved=false;
+			
+			// elozo pozicio
+			this.px = this.x;
+			this.py = this.y;
+			//arena.putPix(this.x, this.y, 0);
+			
+			// uj pozicio
+			this.x += this.dx;
+			this.y += this.dy;
+			
+			this.dxdy(0,0);
+			
+			// check bounds
+			if (this.x < 0) this.x=0; else
+			if (this.x > arena.xSize-1) this.x=arena.xSize-1;
+			if (this.y < 0) this.y=0; else		
+			if (this.y > arena.ySize-1) this.y=arena.ySize-1;
+			
+			let c = arena.getPix(this.x, this.y);
+			//arena.putPix(this.x, this.y, this.color);
+			return c;
+		}
+		return -1;
+	}
+	
+	render(arena, vonal) {
+		// Draw player
+		dotFill(this.x, this.y, 'blue'); //this.color);
+		if (vonal) arena.putPix(this.x, this.y, C_Vonal);
+	}
+};
+
+class Enemy {
+	static StartSpeed = 5;
+	static NumLines = 16;
+
+	static randomcolor() {return '#'+ Math.floor(Math.random()*16777215).toString(16);}
+	
+	/* private */
+	// returns boolean
+	static isPointInRect(x,y, x1,y1,x2,y2) {
+		let xx1=Math.min(x1,x2);
+		let xx2=Math.max(x1,x2);
+		let yy1=Math.min(y1,y2);
+		let yy2=Math.max(y1,y2);				
+		return x>=xx1 && x<=xx2 && y>=yy1 && y<=yy2;
+	}
+	
+	constructor(spd) {
+		this.color = Enemy.randomcolor();
+		this.speed = spd;
+		this.speedt = 0;
+		this.first = 0;
+		
+		this.dx1 = 0;
+		this.dx2 = 0;
+		this.dy1 = 0;
+		this.dy2 = 0;
+		
+		this.x1 = [];
+		this.x2 = [];
+		this.y1 = [];
+		this.y2 = [];
+		
+		this.reset();
+	}
+
+	/* private */
+	pointLineDist(x,y, x1,y1, x2,y2) {
+		let dx=x2-x1, dy=y2-y1;
+		let d=Math.sqrt(dx*dx+dy*dy);
+		let nx=dy/d, ny=-dx/d;
+		return (x1-x)*nx + (y1-y)*ny;	// D = n.(a-p)
+	}
+	
+	/* private 
+	// returns true if the given color NOT equals the canvas pixel value
+	pxc(x,y, c) {return getDot(x,y)!=c;} */
+	pxc(x,y, c) { // get large dot from the board
+		return board.getPix(x>>PsD,y>>PsD)!=c;
+	}
+	
+	
+	dead() {
+		return this.pxc(this.x1[this.first],this.y1[this.first],0) && this.pxc(this.x2[this.first],this.y2[this.first],0);
+	}
+	
+	/** private
+	// returns true if a color found along the line
+	lineCheck(x,y, x2,y2, needColor) {
+		let w = x2 - x;
+		let h = y2 - y;
+		let dx1 = 0, dy1 = 0, dx2 = 0, dy2 = 0;
+		if (w<0) dx1 = -1; else if (w>0) dx1 = 1;
+		if (h<0) dy1 = -1; else if (h>0) dy1 = 1;
+		if (w<0) dx2 = -1; else if (w>0) dx2 = 1;
+		let longest = Math.abs(w) ;
+		let shortest = Math.abs(h) ;
+		if (longest<=shortest) {
+			longest = Math.abs(h) ;
+			shortest = Math.abs(w) ;
+			if (h<0) dy2 = -1; else if (h>0) dy2 = 1;
+			dx2 = 0;
+		}
+		let numerator = longest >> 1;
+		for (let i=0; i<=longest; i++) {
+			if (getDot(x, y)==needColor)
+				return true;
+			numerator += shortest;
+			if (numerator>=longest) {
+				numerator -= longest;
+				x += dx1;
+				y += dy1;
+			} else {
+				x += dx2;
+				y += dy2;
+			}
+		}
+		return false; 
+	} **/
+
+	// returns if the enemy hits the player
+	hit(x,y) {
+		let i=this.first;		
+		if (Enemy.isPointInRect(x,y, this.x1[i],this.y1[i], this.x2[i],this.y2[i])) {		
+			let d = this.pointLineDist(x,y, this.x1[i],this.y1[i], this.x2[i],this.y2[i]);
+			if (Math.abs(d) < EDxP) {
+				console.log('dist=',d);
+				return true;
+			}
+			//if (this.hitSamples()==C_Player) return true;
+		}	
+		return false;
+	}
+	
+	speedUp() {
+		if(this.speed>0) this.speed--; this.speedt=0;
+	}
+	
+	reset() {
+		this.speedt = 0;
+		this.first = 0;
+		
+		this.clearSamples();
+		this.sampleFlag_timer_on = 0;
+		this.sampleFlag = true;
+		
+		this.x1 = new Array(Enemy.NumLines);
+		this.x2 = new Array(Enemy.NumLines);
+		this.y1 = new Array(Enemy.NumLines);
+		this.y2 = new Array(Enemy.NumLines);
+		
+		/* initialise the first line */
+		
+		this.x1[0] = (xSize/2 - 10*Math.random())|0;
+		this.y1[0] = (ySize/2 + 10*Math.random())|0;
+		this.x2[0] = (xSize/2 - 10*Math.random())|0;
+		this.y2[0] = (ySize/2 + 10*Math.random())|0;
+		
+		/* initialise all the other lines */
+	   for (let i = 1; i < Enemy.NumLines; i++) {
+			this.x1[i] = this.x1[0];
+			this.y1[i] = this.y1[0];
+			this.x2[i] = this.x2[0];
+			this.y2[i] = this.y2[0];
+		}
+		
+		this.dx1 =  EDxM*Math.random()|0 + EDxP;
+		this.dx2 = -EDxM*Math.random()|0 - EDxP;
+		this.dy1 =  EDxM*Math.random()|0 + EDxP;		
+		this.dy2 = -EDxM*Math.random()|0 - EDxP;
+	}
+
+	update() {
+		if(this.speedt++ < this.speed)
+			return;
+		
+		this.speedt = 0;
+		this.samplesTimer();
+		
+		// update the first line 
+		
+		let k = this.first;
+		
+		if(--this.first<0) this.first=Enemy.NumLines-1;
+		
+		this.x1[this.first] = this.x1[k];
+		this.x2[this.first] = this.x2[k];
+		this.y1[this.first] = this.y1[k];
+		this.y2[this.first] = this.y2[k];
+		
+	
+		if(this.x1[this.first] + this.dx1 < xSize-PlayerSize && this.pxc(this.x1[this.first] + this.dx1,this.y1[this.first], C_Menet)) this.x1[this.first] += this.dx1; else this.dx1= -EDxM*Math.random()|0 - EDxP;
+		if(this.x1[this.first] + this.dx1 >= PlayerSize      && this.pxc(this.x1[this.first] + this.dx1,this.y1[this.first], C_Menet)) this.x1[this.first] += this.dx1; else this.dx1=  EDxM*Math.random()|0 + EDxP;
+		if(this.y1[this.first] + this.dy1 < ySize-PlayerSize && this.pxc(this.x1[this.first],this.y1[this.first] + this.dy1, C_Menet)) this.y1[this.first] += this.dy1; else this.dy1= -EDxM*Math.random()|0 - EDxP;
+		if(this.y1[this.first] + this.dy1 >= PlayerSize      && this.pxc(this.x1[this.first],this.y1[this.first] + this.dy1, C_Menet)) this.y1[this.first] += this.dy1; else this.dy1=  EDxM*Math.random()|0 + EDxP;
+		if(this.x2[this.first] + this.dx2 < xSize-PlayerSize && this.pxc(this.x2[this.first] + this.dx2,this.y2[this.first], C_Menet)) this.x2[this.first] += this.dx2; else this.dx2= -EDxM*Math.random()|0 - EDxP;
+		if(this.x2[this.first] + this.dx2 >= PlayerSize      && this.pxc(this.x2[this.first] + this.dx2,this.y2[this.first], C_Menet)) this.x2[this.first] += this.dx2; else this.dx2=  EDxM*Math.random()|0 + EDxP;
+		if(this.y2[this.first] + this.dy2 < ySize-PlayerSize && this.pxc(this.x2[this.first],this.y2[this.first] + this.dy2, C_Menet)) this.y2[this.first] += this.dy2; else this.dy2= -EDxM*Math.random()|0 - EDxP;
+		if(this.y2[this.first] + this.dy2 >= PlayerSize      && this.pxc(this.x2[this.first],this.y2[this.first] + this.dy2, C_Menet)) this.y2[this.first] += this.dy2; else this.dy2=  EDxM*Math.random()|0 + EDxP;
+
+/**		
+		if(this.lineCheck(this.x1[this.first],this.y1[this.first], this.x2[this.first],this.y2[this.first], WHITE)) {
+			this.dx1 = -this.dx1;
+			this.dx2 = -this.dx2;
+			this.dy1 = -this.dy1;
+			this.dy2 = -this.dy2;
+		}
+
+		if(this.x1[this.first] + this.dx1 < xSize-PlayerSize ) this.x1[this.first] += this.dx1; else this.dx1= -EDxM*Math.random()|0 - EDxP; 
+		if(this.x1[this.first] + this.dx1 >= PlayerSize      ) this.x1[this.first] += this.dx1; else this.dx1=  EDxM*Math.random()|0 + EDxP;
+		
+		if(this.y1[this.first] + this.dy1 < ySize-PlayerSize ) this.y1[this.first] += this.dy1; else this.dy1= -EDxM*Math.random()|0 - EDxP; 
+		if(this.y1[this.first] + this.dy1 >= PlayerSize      ) this.y1[this.first] += this.dy1; else this.dy1=  EDxM*Math.random()|0 + EDxP;
+		
+		if(this.x2[this.first] + this.dx2 < xSize-PlayerSize ) this.x2[this.first] += this.dx2; else this.dx2= -EDxM*Math.random()|0 - EDxP; 
+		if(this.x2[this.first] + this.dx2 >= PlayerSize      ) this.x2[this.first] += this.dx2; else this.dx2=  EDxM*Math.random()|0 + EDxP;
+		
+		if(this.y2[this.first] + this.dy2 < ySize-PlayerSize ) this.y2[this.first] += this.dy2; else this.dy2= -EDxM*Math.random()|0 - EDxP; 
+		if(this.y2[this.first] + this.dy2 >= PlayerSize      ) this.y2[this.first] += this.dy2; else this.dy2=  EDxM*Math.random()|0 + EDxP;
+
+		if (this.pxc(this.x1[this.first], this.y1[this.first], 0) || this.pxc(this.x2[this.first], this.y2[this.first], 0)) {
+			this.dx1 = -this.dx1;
+			this.dx2 = -this.dx2;
+			this.dy1 = -this.dy1;
+			this.dy2 = -this.dy2;
+		} */
+		
+		let c = this.hitSamples();
+		if (c) {
+			if (c==C_Menet || c==C_Filled) {
+				this.dx1 = -this.dx1;
+				this.dy1 = -this.dy1;			
+				this.dx2 = -this.dx2;
+				this.dy2 = -this.dy2;
+				
+				this.x1[this.first] += this.dx1;
+				this.y1[this.first] += this.dy1;			
+				this.x2[this.first] += this.dx2;
+				this.y2[this.first] += this.dy2;
+				
+				this.clearSamples();
+				this.sampleFlag=false;
+				this.sampleFlag_timer_on = Enemy.NumLines;
+			}
+			else {
+				GAME_WIN=false;
+				GAME_OVER=true;
+			}
+		}
+	}
+	
+	/* private */
+	clearSamples() {
+		this.Xc = [];	// board coordinates
+		this.Yc = [];
+	}
+	
+	/* private */
+	addSamples(x,y) {
+		this.Xc.push(x);
+		this.Yc.push(y);
+	}
+	
+	/* private -- returns obstacle color */
+	hitSamples() {
+		let c;
+		for (let i=0; i<this.Xc.length; i++) {
+			c = board.getPix(this.Xc[i], this.Yc[i]);
+			if (c) return c;
+		}
+		return 0;
+	}
+	
+	/* private */
+	samplesTimer() {		
+		if (!this.sampleFlag) {
+			if (this.sampleFlag_timer_on > 0) {
+				if (--this.sampleFlag_timer_on==0)
+					this.sampleFlag=true;
+			}
+		}
+	}
+	
+	/* private */
+	genSamples(x1,y1, x2,y2, n) {
+		if (--n > 0) {
+			let x = (x1 + x2) >> 1;
+			let y = (y1 + y2) >> 1;
+			this.addSamples(x,y);
+			if (helpFlag) dotFill(x,y, this.color);
+			if (Math.abs(x-x1) > 4 || Math.abs(y-y2) > 4) {
+				this.genSamples(x1,y1, x,y, n);
+				this.genSamples(x,y, x2,y2, n);
+			}
+		}
+	}
+	
+	render_check() {
+		let col;
+		let x,y, x1,x2, y1,y2;
+		
+		this.clearSamples();
+		for(let i=0; i<Enemy.NumLines; i++) {			
+			if (i==this.first || i==Enemy.NumLines-1) {
+				col=Pixmap.Color_yellow;
+				
+				x1 = this.x1[i] >> PsD;
+				y1 = this.y1[i] >> PsD;
+				this.addSamples(x1,y1);
+				if (helpFlag) dotFill(x1,y1,col);
+				
+				x2 = this.x2[i] >> PsD;
+				y2 = this.y2[i] >> PsD;
+				this.addSamples(x1,y1);
+				if (helpFlag) dotFill(x2,y2,col);
+				
+				this.genSamples(x1,y1, x2,y2, 16);
+			}
+			else col=this.color;
+			line( this.x1[i],this.y1[i], this.x2[i],this.y2[i], col );
+		}
+	}
+	
+	render_normal() {
+		let col;
+		for(let i=0; i<Enemy.NumLines; i++) {			
+			if (i==this.first)
+				col=Pixmap.Color_yellow;
+			else col=this.color;
+			line( this.x1[i],this.y1[i], this.x2[i],this.y2[i], col );
+		}
+	}
+	
+	render() {
+		if (this.sampleFlag)
+			this.render_check();
+		else this.render_normal();
+	}
+};
+
+function line(x0,y0,x1,y1,col) {
+	ctx.strokeStyle = col;
+	ctx.beginPath();
+	ctx.moveTo(x0,y0);
+	ctx.lineTo(x1,y1);
+	ctx.stroke();
+}
+
+function startMark() {
+	flagVonalGomb=false;
+	flagCtrlGomb=false;
+	vonalHuzas=false;
+	vonalHuzasMode=0;
+	vx0 = vy0 = -1;
+}
+
+function speedupEnemies() {
+	for(let i=0; i<enemies.length; i++) 
+		enemies[i].speedUp();
+}
+
+function freeObjects() {
+	if (board) {
+		delete board.pixels;
+		board = undefined;
+	}
+	player = undefined;
+	for(let i=0; i<enemies.length; i++) {
+		delete enemies[i].x1;
+		delete enemies[i].y1;
+		delete enemies[i].x2;
+		delete enemies[i].y1;
+		enemies[i] = undefined;
+	}
+	enemies = [];
+}
+
+/**
+function getDot(x,y) {
+	var imgData = ctx.getImageData(x,y,1,1);
+	return (imgData[0] << 16) | (imgData[1] << 8) | imgData[2];
+} 
+
+function drawRect(rec, col='yellow') {
+	let x1=rec.x1, y1=rec.y1, x2=rec.x2, y2=rec.y2;
+	let x=Math.min(x1,x2), y=Math.min(y1,y2);
+	let xs=Math.abs(x1-x2), ys=Math.abs(y1-y2);
+	ctx.beginPath();	
+	ctx.strokeStyle = col;
+	ctx.rect(x,y,xs,ys,col);
+	ctx.stroke();	
+}
+
+
+**/
+	
+function dotFill(x,y,col) {
+	ctx.fillStyle = col;
+	ctx.fillRect(x<<PsD, y<<PsD, PlayerSize,PlayerSize, col);
+}
+
+// jatek ujra indul
+function resetGame() {
+	let xGridSize = xSize>>PsD, yGridSize = ySize>>PsD;
+	totalPlaces = xGridSize * yGridSize;
+	totalFilled = 0;
+	winPercent = WinPercentInit;
+	
+	GAME_WIN = false;
+	GAME_OVER = false;
+	
+	helpFlag = false;
+	stopFlag = false;
+	testFlag = false;
+	
+	ticks = 0;
+	level = 1;
+	score = 0;
+	hiscore = getHiscore();
+	
+	// vonalhuzas init
+	startMark();
+	
+	// Create game objects
+	freeObjects();	
+	
+	board = new Pixmap(xGridSize, yGridSize);
+	board.clear();
+	board.frame( C_Menet );
+	player = new Player(1, C_Player1);
+	enemies.push(new Enemy(Enemy.StartSpeed));
+	
+	// Start message display
+	ShowText("Press T for Samples", xSize/3, ySize/3, 4);
+}
+
+// kovetkezo szint
+function nextGame() {
+	GAME_WIN = false;
+	GAME_OVER = false;		
+	
+	msgx="";
+	
+	totalFilled = 0;		
+					
+	// vonalhuzas init
+	startMark();
+		
+	level++;
+	
+	winPercent += WinPercentStep;
+	if(winPercent > WinPercentMax)
+		winPercent = WinPercentMax;		
+	
+	player.reset();
+	for (const quix of enemies) {
+		quix.reset();
+	}
+	
+	enemies.push(new Enemy(Enemy.StartSpeed));
+	speedupEnemies();
+	
+	board.clear();
+	board.frame( C_Menet );
+}
+
+function Update() {
+	if(stopFlag) return false;
+	/* Check Game Win */		
+	if(Math.floor(100.0*totalFilled / totalPlaces) > winPercent || enemies.length==0){
+		GAME_WIN = true;
+		GAME_OVER = true;
+		return false;
+	}
+
+	if((++ticks%256)==0) {
+		speedupEnemies();		
+	}
+	
+	/* updapte player */
+	switch (player.update(board)) {
+		case 0:
+			if (!vonalHuzas || vonalHuzasMode==0)
+				player.stop();
+			break;
+		case C_Vonal: // belemenne a sajat huzott vonalba
+		case C_Filled: // Mar kitoltott mezore nem lephet
+			player.stop();
+			break;
+		default:
+			//console.log('stay')
+			break;
+	}
+	
+	/* update enemies, check collision */
+	let safe = board.isAlapvonal(player.x, player.y);
+	for(let i=0; i<enemies.length; i++) {
+		enemies[i].update();
+		if(enemies[i].dead()) {
+			enemies = enemies.splice(i,1);
+		}
+		else if( !safe && enemies[i].hit(player.x<<PsD, player.y<<PsD) ) {
+			GAME_WIN=false;
+			GAME_OVER=true;
+		}
+		if (GAME_OVER)
+			return false;
+	}
+	return true;
+}
+
+function GameOver() {
+	let msg = GAME_WIN ? "YOU WIN" : "GAME OVER";
+	ctx.font = "50px Arial";
+	ctx.fillStyle = "blue";	
+	ctx.textAlign = "center";
+	ctx.fillText(msg, xSize/2, ySize/2); 
+	ShowText(msg, xSize/2, ySize/2, 10);
+}
+
+function GamePause() {
+	let msg="GAME PAUSE - P";/*
+	ctx.font = "50px Arial";
+	ctx.fillStyle = GameFontColor;	
+	ctx.textAlign = "center";
+	ctx.fillText(msg, xSize/2, ySize/2); */
+	ShowText(msg, xSize/2, ySize/2, 10);
+}
+
+function getHiscore() {
+	return 99800;
+}
+
+function putHiscore(score) {
+	hiscore = score;
+}
+
+function ShowText(msg, x,y, nf) {
+	msgx=msg;	
+	msgxx=x;
+	msgxy=y;
+	msgxc=nf * m_interval;
+}
+
+function Display() {
+	let x=20, y=3*PlayerSize, lH=y-10;
+	ctx.font = GameFont;
+	ctx.fillStyle = GameFontColor;	
+	ctx.textAlign = "left";
+	ctx.fillText("TIMER ",x,y);	y+=lH;
+	ctx.fillText("LEVEL "+level,x,y);	y+=lH;
+	ctx.fillText("SCORE "+score,x,y);	y+=lH;
+	ctx.fillText("HIGHS "+hiscore,x,y);	y+=lH;
+	if(msgxc-- >=0) ctx.fillText(msgx,msgxx++,msgxy++); else msgx="";
+}
+
+function Render() {
+	//ctx.clearRect(0,0,canvas.width,canvas.height);	
+		
+	/**
+	if (vonalHuzas && vonalHuzasMode>0) {
+		// NINCS vonal elengedese	
+		if (vonalHuzasMode==1 || vonalHuzasMode==2) {
+			if (!flagVonalGomb || !flagCtrlGomb) {
+				board.overcol( C_Vonal,0 );	// le kell torolni az eddigieket
+				startMark(); // vonal new start
+			}
+		}
+		// vonal bezarasa ..
+	} */
+	
+	board.render();
+	
+	// render actors
+	if (board.isAlapvonal(player.x,player.y)) {
+		
+		if(vonalHuzas && (vx0>=0 && vy0>=0)) {
+				//vonal bezarasa ..
+				vx1=player.x;
+				vy1=player.y;
+				
+				if(vx1!=vx0 || vy1!=vy0) { // volt terulet	
+					// Az eddigi zold vonal a bezart terulet resze lesz
+					let count =board.overcol(C_Vonal, C_Menet); 
+					count+=board.filler( dir, vx0,vy0, vx1,vy1 );
+					totalFilled += count;
+					
+					// lassu vagy gyors gombbal tortent?
+					if(vonalHuzasMode==1)
+						score += totalFilled;
+					else if (vonalHuzasMode==2)
+						score += totalFilled*2;
+					
+					// Start message display
+					ShowText("POINTS +"+count, xSize/3, ySize/3, 4);
+					
+					startMark(); // new start							
+				}	
+		} 
+		
+		// vonalhuzas kezdes lehetoseg
+		vonalHuzas=flagVonalGomb;// || flagCtrlGomb; 
+		if(flagVonalGomb) vonalHuzasMode = 1; else 
+		if(flagCtrlGomb)  vonalHuzasMode = 2; else	
+						  vonalHuzasMode = 0;
+
+		player.render( board, false );	
+		
+	} else { /* a jatekos nincs az alapvonalon */				
+		
+		// vonalhuzas indulo pozicio 	
+		if(vonalHuzas && (vx0<0||vy0<0)) { // eloszor.. elhagyta az alapvonalat						
+			vx0=player.x;
+			vy0=player.y;
+			dir=player.currDir;		// indulo irany					
+		}
+		player.render( board, vonalHuzas );			
+	}
+
+	// Render enemies
+	for(const enemy of enemies)
+		enemy.render();
+}
+
+function loop() {
+	joy_updateStatus();
+	if (!GAME_OVER && !stopFlag) {
+		if (!Update()) {			
+			if (GAME_OVER) GameOver(); 			
+		}
+		else Render();
+	}
+	Display();
+	rAF(loop);
+}
+
+function resize() {
+    xSize = canvas.width = window.innerWidth;
+    ySize = canvas.height = window.innerHeight;
+}
+
+function playerControlButton(playerNum, buttonNum) {
+console.log('playerControlButton(%d, %d)', playerNum, buttonNum);
+	if (playerNum==0) {
+		if (buttonNum==0)
+			flagVonalGomb=true;
+	}
+}
+
+function playerControlMove(playerNum, dx,dy) {
+console.log('playerControlMove(%d, %d,%d)', playerNum, dx,dy);
+	if (playerNum==0) {
+		if(dx==0 && dy==-1) player.move(Player.DIR_UP); else
+		if(dx==1 && dy== 0) player.move(Player.DIR_RIGHT); else
+		if(dx==0 && dy==+1) player.move(Player.DIR_DOWN); else
+		if(dx==-1 && dy==0) player.move(Player.DIR_LEFT); 
+	}
+}
+
+function init() {
+	canvas = document.getElementById("Canvas");
+	ctx = canvas.getContext("2d");
+	ctx.lineWidth = "1";
+	canvas.addEventListener('resize', resize, false);
+	resize();
+	resetGame();
+	document.onkeyup = function(e) {
+		if (e.keyCode==32) {
+			flagVonalGomb=false;
+		}
+	};
+	document.onkeydown = function(e) {
+		switch (e.keyCode) {
+			case 32: flagVonalGomb=true; break; // space
+			case 37: player.move(Player.DIR_LEFT); break; // left
+			case 38: player.move(Player.DIR_UP); break; // up
+			case 39: player.move(Player.DIR_RIGHT); break;// right
+			case 40: player.move(Player.DIR_DOWN); break; // down
+			case 13: if(GAME_OVER && GAME_WIN) nextGame(); else resetGame(); break; // enter
+			default:
+				switch (e.key) {	
+					case 'h': helpFlag = !helpFlag; break;
+					case 't': testFlag = !testFlag; break;
+					case 'p': stopFlag = !stopFlag;
+						if (stopFlag) GamePause(); 
+						break;
+				}
+				break;
+		}
+	};
+	/*******************************************************/
+	if (haveEvents) {
+	  window.addEventListener("gamepadconnected", connecthandler);
+	  window.addEventListener("gamepaddisconnected", disconnecthandler);
+	} else if (haveWebkitEvents) {
+	  window.addEventListener("webkitgamepadconnected", connecthandler);
+	  window.addEventListener("webkitgamepaddisconnected", disconnecthandler);
+	} else {
+	  setInterval(joy_scangamepads, 500);
+	}
+	/*******************************************************/
+	//requestAnimationFrame(loop);
+	//rAF(joy_updateStatus);
+	rAF(loop);
+}
+</script>
+</head>
+ <body onload="init();">
+<canvas id="Canvas">Your browser does not support the canvas element.</canvas>
+</body>
+</html>
