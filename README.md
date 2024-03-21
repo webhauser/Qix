@@ -13,4 +13,4 @@ Simply connect a Gamepad to USB port and use the directions to move and hold But
 -Space: Hold space while moving to start capture an Area
 -H: debug help
 
-[Qix test]: https://webhauser.github.io/Qix/
+[Qix test] https://webhauser.github.io/Qix/
