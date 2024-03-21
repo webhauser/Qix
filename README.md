@@ -1,5 +1,6 @@
 # Qix
 Qix browser based javascript game with keyboard and gamepad controls
+![Quix screenshot](qix.jpg)
 
 > [!WARNING]
 > This game is under development and far from complete game.
