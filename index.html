@@ -5,7 +5,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="Keywords" content="Qix">
-<meta name="Description" content="Qix game in browser">
+<meta name="Description" content="Qix game in browser by Webhauser">
 <meta name="author" content="webhauser@gmail.com">
 <style>
 * { margin:0; padding:0; } 		/* to remove the top and left whitespace */
@@ -294,6 +294,8 @@ class Pixmap {
 	
 		count1=this.fill(cx1,cy1, Pixmap.Color_red); this.overcol(Pixmap.Color_red,0); // delete red color
 		count2=this.fill(cx2,cy2, Pixmap.Color_red); this.overcol(Pixmap.Color_red,0); // delete red color
+		
+		if(count1 + 1 == count2) return 0; // prevent null win
 		
 		// Display candidate points for the fill start
 		if(count1 < count2) {			
