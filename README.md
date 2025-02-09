@@ -10,7 +10,7 @@ Simply connect a Gamepad to USB port and use the directions to move and hold But
 Enter: Restart Game\
 Arrows: Moves the Player\
 Space: Hold space while moving to start capture an Area\
-H: debug help\
+H: debug help
 
 [Qix test] https://webhauser.github.io/Qix/
 
